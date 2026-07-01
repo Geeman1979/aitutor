@@ -25,17 +25,14 @@ export async function POST(req: NextRequest) {
     const studentId = (authSession.user as any).id;
     const subjectKey = subject || "general";
     const gradeEnum = gradeEnumMap[grade] || "G10";
-    const subjectEnum = subjectEnumMap[subjectKey] || "GENERAL";
 
     if (!sessionId) {
-      const session = await prisma.session.create({
-        data: {
-          studentId, subject: subjectEnum as any,
-          topic: subjectKey === "general" ? "" : subjectKey,
-          grade: gradeEnum as any, startedAt: new Date(),
-        },
-      });
-      sessionId = session.id;
+      try {
+        const session = await prisma.session.create({
+          data: { studentId, subject: subjectEnumMap[subjectKey] as any, topic: subjectKey === "general" ? "" : subjectKey, grade: gradeEnum as any, startedAt: new Date() },
+        });
+        sessionId = session.id;
+      } catch {}
     }
 
     const systemPrompt = tutorPrompt(grade, subjectKey, "", learnerName, "CAPS", language, hobbies);
@@ -45,8 +42,7 @@ export async function POST(req: NextRequest) {
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       if (msg.role === "user") {
-        const isLatest = i === messages.length - 1;
-        apiMessages.push({ role: "user", content: isLatest ? `${msg.content}\n\n${contextTag}` : msg.content });
+        apiMessages.push({ role: "user", content: i === messages.length - 1 ? `${msg.content}\n\n${contextTag}` : msg.content });
       } else if (msg.role === "assistant") {
         apiMessages.push({ role: "assistant", content: msg.content });
       }
@@ -66,32 +62,24 @@ export async function POST(req: NextRequest) {
           if (text) { fullResponse += text; controller.enqueue(encoder.encode(text)); }
         }
         controller.close();
-        try {
-          const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
-          if (lastUserMsg) {
-            await prisma.message.createMany({
-              data: [
-                { sessionId, role: "user", content: lastUserMsg.content },
-                { sessionId, role: "assistant", content: fullResponse },
-              ],
-            });
-          }
-        } catch (e) { console.error("Failed to save messages:", e); }
+        if (sessionId) {
+          try {
+            const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
+            if (lastUserMsg) {
+              await prisma.message.createMany({
+                data: [{ sessionId, role: "user", content: lastUserMsg.content }, { sessionId, role: "assistant", content: fullResponse }],
+              });
+            }
+          } catch {}
+        }
       },
     });
 
-    const response = new Response(readable, {
-      headers: {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Transfer-Encoding": "chunked",
-        "X-Session-Id": sessionId,
-      },
+    return new Response(readable, {
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Transfer-Encoding": "chunked", "X-Session-Id": sessionId || "" },
     });
-    return response;
   } catch (error) {
     console.error("Tutor API error:", error);
-    return new Response(JSON.stringify({ error: "Something went wrong" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify({ error: "Something went wrong" }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 }
